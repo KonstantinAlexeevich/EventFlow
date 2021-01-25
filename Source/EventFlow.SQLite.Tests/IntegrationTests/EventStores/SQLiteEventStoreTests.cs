@@ -30,7 +30,9 @@ using EventFlow.Core;
 using EventFlow.Extensions;
 using EventFlow.MetadataProviders;
 using EventFlow.SQLite.Connections;
+using EventFlow.SQLite.EventStores;
 using EventFlow.SQLite.Extensions;
+using EventFlow.SQLite.Tests.TestHelpers;
 using EventFlow.TestHelpers;
 using EventFlow.TestHelpers.Suites;
 using NUnit.Framework;
@@ -40,39 +42,20 @@ namespace EventFlow.SQLite.Tests.IntegrationTests.EventStores
     [Category(Categories.Integration)]
     public class SQLiteEventStoreTests : TestSuiteForEventStore
     {
-        private string _databasePath;
+        private ISQLiteDatabase _testDatabase;
 
         protected override IRootResolver CreateRootResolver(IEventFlowOptions eventFlowOptions)
         {
-            _databasePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlite");
-
-            using (File.Create(_databasePath)){ }
+            _testDatabase = SQLiteHelpz.CreateDatabase("eventflow");
 
             var resolver = eventFlowOptions
-                .AddMetadataProvider<AddGuidMetadataProvider>()
-                .ConfigureSQLite(SQLiteConfiguration.New.SetConnectionString($"Data Source={_databasePath};Version=3;"))
-                .UseSQLiteEventStore()
+                .ConfigureSQLite(SQLiteConfiguration.New.SetConnectionString(_testDatabase.ConnectionString.Value))
+                .UseEventStore<SQLiteEventPersistence>()
                 .CreateResolver();
 
-            var connection = resolver.Resolve<ISQLiteConnection>();
-            const string sqlCreateTable = @"
-                CREATE TABLE [EventFlow](
-                    [GlobalSequenceNumber] [INTEGER] PRIMARY KEY ASC NOT NULL,
-                    [BatchId] [uniqueidentifier] NOT NULL,
-                    [AggregateId] [nvarchar](255) NOT NULL,
-                    [AggregateName] [nvarchar](255) NOT NULL,
-                    [Data] [nvarchar](1024) NOT NULL,
-                    [Metadata] [nvarchar](1024) NOT NULL,
-                    [AggregateSequenceNumber] [int] NOT NULL
-                )";
-            const string sqlCreateIndex = @"
-                CREATE UNIQUE INDEX [IX_EventFlow_AggregateId_AggregateSequenceNumber] ON [EventFlow]
-                (
-                    [AggregateId] ASC,
-                    [AggregateSequenceNumber] ASC
-                )";
-            connection.ExecuteAsync(Label.Named("create-table"), CancellationToken.None, sqlCreateTable, null).Wait();
-            connection.ExecuteAsync(Label.Named("create-index"), CancellationToken.None, sqlCreateIndex, null).Wait();
+            var databaseMigrator = resolver.Resolve<ISQLiteDatabaseMigrator>();
+            EventFlowEventStoresSQLite.MigrateDatabase(databaseMigrator);
+            databaseMigrator.MigrateDatabaseUsingEmbeddedScripts(GetType().Assembly);
 
             return resolver;
         }
@@ -80,11 +63,7 @@ namespace EventFlow.SQLite.Tests.IntegrationTests.EventStores
         [TearDown]
         public void TearDown()
         {
-            if (!string.IsNullOrEmpty(_databasePath) &&
-                File.Exists(_databasePath))
-            {
-                File.Delete(_databasePath);
-            }
+            _testDatabase.Dispose();
         }
     }
 }
